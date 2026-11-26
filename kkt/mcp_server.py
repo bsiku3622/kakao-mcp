@@ -1,10 +1,10 @@
-"""kkt MCP server - KakaoTalk for Mac as deterministic MCP tools (stdio).
+"""kkt MCP server - KakaoTalk for Mac as deterministic MCP tools.
 
 Every action is an AX attribute read/write or an element-scoped AX action on the
 official app. No keystrokes, no mouse events, no network traffic of its own.
-A send is judged by the app itself (a new outgoing bubble with the same text in
-rows that did not exist before the press); the window capture that comes back
-is for a visual second look, not the verdict.
+A send is judged by the app itself - a new outgoing bubble with the same text,
+or else the composer the app cleared when it sent - and the window capture that
+comes back is for a visual second look, not the verdict.
 
 Transports:
   (default)   stdio - this process drives KakaoTalk, so it needs the caller's
@@ -15,11 +15,8 @@ Transports:
   --bridge    a stdio relay to the daemon. It never touches KakaoTalk, so it works
               from any context, including `ssh macbook kakao-mcp --bridge`.
 
-Guardrails (environment variables):
-  KKT_ALLOWED_ROOMS     comma-separated window titles that may be sent to (empty = any open room)
-  KKT_MAX_PER_HOUR      sends per rolling hour (default 30)
-  KKT_MIN_INTERVAL      seconds between sends (default 2)
-  KKT_REPEAT_WINDOW     seconds in which the same text to the same room is refused (default 120)
+Optional switches:
+  KKT_ALLOWED_ROOMS     comma-separated window titles that may be sent to (unset = any room)
   data/STOP             while this file exists, sends are refused
 """
 from __future__ import annotations
@@ -27,6 +24,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import hmac
 import json
 import os
@@ -34,15 +32,13 @@ import secrets
 import sys
 import threading
 import time
-from collections import deque
 
 import ApplicationServices as AS
 
-from .ax import Chat, KakaoError, attr, kakao_pid, list_windows, nfc, screen_locked, _first
+from .ax import Chat, KakaoError, kakao_pid, list_windows, nfc, screen_locked
 from .capture import snap
+from .deliver import composer, deliver
 from .open_chat import MAIN_TITLE, hid_idle_seconds, open_chat
-
-import functools
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -56,15 +52,12 @@ STOP = os.path.join(DATA, "STOP")
 TOKEN_FILE = os.path.join(DATA, "http-token")
 LOCK_FILE = os.path.join(DATA, ".kakao.lock")
 HTTP_PORT = int(os.environ.get("KKT_HTTP_PORT", "8799"))
-MAX_TEXT = 1000
-
 ALLOWED = {nfc(r.strip()) for r in os.environ.get("KKT_ALLOWED_ROOMS", "").split(",") if r.strip()}
-MAX_PER_HOUR = int(os.environ.get("KKT_MAX_PER_HOUR", "30"))
-MIN_INTERVAL = float(os.environ.get("KKT_MIN_INTERVAL", "2"))
-REPEAT_WINDOW = float(os.environ.get("KKT_REPEAT_WINDOW", "120"))
+
+NOT_A_ROOM_TTL = 600.0               # remember windows without a composer (e.g. "Window") this long
 
 _thread_lock = threading.Lock()
-_sent: deque[tuple[float, str, str]] = deque()  # (time, room, text) of verified or uncertain sends
+_not_a_room: dict[tuple[int, str], float] = {}
 
 
 @contextlib.contextmanager
@@ -79,14 +72,16 @@ def _lock():
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
 
+
 mcp = MCPServer(
     "kakaotalk",
     instructions=(
-        "KakaoTalk for Mac through Accessibility. Rooms are addressed by their chat window title "
-        "(see list_rooms). send_message verifies delivery itself and returns status sent / not_sent / "
-        "uncertain plus a capture of the chat for a visual check. Never resend after 'uncertain': the "
-        "message may have gone out; look at the capture or read_messages instead. Reading walks KakaoTalk's "
-        "UI on its main thread, so read only what is needed and do not poll."
+        "KakaoTalk for Mac through Accessibility. Rooms are addressed by their chat window title, "
+        "which is the name shown in the chat list without a '팀채팅, ' / '오픈채팅, ' / '나와의 채팅, ' prefix. "
+        "send_message opens a room that has no window yet by itself, verifies delivery, and returns "
+        "status sent / not_sent / uncertain / refused plus a capture of the chat. Never resend after "
+        "'sent' or 'uncertain'. Reading walks KakaoTalk's UI on its main thread, so read only what is "
+        "needed and do not poll."
     ),
 )
 
@@ -110,14 +105,19 @@ def _log(**kw):
 
 
 def _rooms() -> list[dict]:
-    return [{"title": w["title"], "on_screen": w["onscreen"]}
-            for w in list_windows() if w["title"] != MAIN_TITLE]
-
-
-def _not_open(room: str) -> KakaoError:
-    titles = [r["title"] for r in _rooms()]
-    return KakaoError(f"no chat window titled exactly {room!r} is open. Open rooms: {titles}. "
-                      "Use open_room (or open_if_needed=true) to open it.")
+    """Chat windows only: a KakaoTalk window counts as a room when it has a composer."""
+    pid = kakao_pid()
+    out, now = [], time.time()
+    for w in list_windows(pid):
+        key = (pid, w["title"])
+        if w["title"] == MAIN_TITLE or now - _not_a_room.get(key, -1e9) < NOT_A_ROOM_TTL:
+            continue
+        win = Chat(w["title"], CACHE, pid).window()
+        if win is None or composer(win) is None:
+            _not_a_room[key] = now
+            continue
+        out.append({"title": w["title"], "on_screen": w["onscreen"]})
+    return out
 
 
 def _capture(chat: Chat, full: bool) -> Image | None:
@@ -131,76 +131,18 @@ def _capture(chat: Chat, full: bool) -> Image | None:
         return Image(data=f.read(), format="png")
 
 
-def _guard(room: str, text: str, allow_repeat: bool) -> None:
+def _guard(room: str, text: str) -> None:
     if os.path.exists(STOP):
         raise KakaoError(f"sending is stopped while {STOP} exists")
     if ALLOWED and room not in ALLOWED:
         raise KakaoError(f"{room!r} is not in KKT_ALLOWED_ROOMS {sorted(ALLOWED)}")
     if not text:
         raise KakaoError("empty message")
-    if len(text) > MAX_TEXT:
-        raise KakaoError(f"message is {len(text)} characters; the limit is {MAX_TEXT} "
-                         "(long bubbles fold behind 전체보기 and cannot be verified)")
-    now = time.time()
-    while _sent and now - _sent[0][0] > 3600:
-        _sent.popleft()
-    if len(_sent) >= MAX_PER_HOUR:
-        raise KakaoError(f"hourly cap reached ({MAX_PER_HOUR} sends in the last hour)")
-    if _sent and now - _sent[-1][0] < MIN_INTERVAL:
-        raise KakaoError(f"sends must be at least {MIN_INTERVAL:g}s apart")
-    if not allow_repeat and any(r == room and t == text and now - ts < REPEAT_WINDOW for ts, r, t in _sent):
-        raise KakaoError(f"the same text went to {room!r} less than {REPEAT_WINDOW:g}s ago; "
-                         "pass allow_repeat=true if this repeat is intended")
-
-
-def deliver(chat: Chat, text: str, verify_timeout: float = 6.0) -> dict:
-    """AXValue into the composer, AXPress 전송, then judge by the chat itself.
-
-    Verified only by an outgoing bubble with this exact text among rows that did
-    not exist before the press, so an identical earlier message cannot pass.
-    """
-    win = chat.require_window()
-    field = _first(win, lambda e: attr(e, "AXRole") == "AXTextArea" and attr(e, "AXDescription") == "메시지 입력")
-    table = _first(win, lambda e: attr(e, "AXRole") == "AXTable")
-    if field is None or table is None:
-        raise KakaoError("composer or chat table not found in the chat window")
-    draft = attr(field, "AXValue") or ""
-    if draft.strip():
-        raise KakaoError(f"the composer already holds a draft; not overwriting it ({len(draft)} chars)")
-    before = len(attr(table, "AXRows") or [])
-    if AS.AXUIElementSetAttributeValue(field, "AXValue", text) != 0:
-        raise KakaoError("could not set the composer text")
-    button = None
-    for _ in range(15):
-        time.sleep(0.2)
-        b = _first(win, lambda e: attr(e, "AXRole") == "AXButton" and attr(e, "AXTitle") == "전송")
-        if b is not None and attr(b, "AXEnabled"):
-            button = b
-            break
-    if button is None:
-        AS.AXUIElementSetAttributeValue(field, "AXValue", "")
-        return {"status": "not_sent", "detail": "전송 button never enabled; composer cleared"}
-    press_err = AS.AXUIElementPerformAction(button, "AXPress")  # a busy app may time out and still send
-    t0 = time.time()
-    while time.time() - t0 < verify_timeout:
-        time.sleep(0.4)
-        now_rows = len(attr(table, "AXRows") or [])
-        if now_rows > before:
-            new = chat.messages(win, last_rows=now_rows - before)
-            if any(m.dir == "out" and m.text.strip() == text for m in new):
-                return {"status": "sent", "detail": f"verified in {time.time() - t0:.1f}s "
-                        f"({now_rows - before} new rows, AXPress err={press_err})"}
-    left = (attr(field, "AXValue") or "").strip()
-    if left == text:
-        AS.AXUIElementSetAttributeValue(field, "AXValue", "")
-        return {"status": "not_sent", "detail": f"text was still in the composer (AXPress err={press_err}); cleared"}
-    return {"status": "uncertain", "detail": f"composer is empty but no matching new bubble within "
-            f"{verify_timeout:g}s (AXPress err={press_err}); do not resend, check the capture"}
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def kakao_status() -> dict:
-    """KakaoTalk state: running, permissions, screen lock, open rooms, guardrail settings."""
+    """KakaoTalk state: running, permissions, screen lock, open rooms."""
     pid = kakao_pid()
     main = next((w for w in list_windows(pid) if w["title"] == MAIN_TITLE), None) if pid else None
     return {
@@ -212,33 +154,40 @@ def kakao_status() -> dict:
         "main_window_on_screen": bool(main and main["onscreen"]),
         "open_rooms": _rooms() if pid else [],
         "user_idle_seconds": hid_idle_seconds(),
-        "guardrails": {"allowed_rooms": sorted(ALLOWED) or "any open room", "max_per_hour": MAX_PER_HOUR,
-                       "min_interval_s": MIN_INTERVAL, "repeat_window_s": REPEAT_WINDOW,
-                       "stopped": os.path.exists(STOP), "max_chars": MAX_TEXT},
+        "allowed_rooms": sorted(ALLOWED) or "any",
+        "stopped": os.path.exists(STOP),
     }
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 @_tool_errors
 def list_rooms() -> list[dict]:
-    """Chat rooms that are open in their own window. Only these can be read or sent to
-    without opening (open_room). on_screen=false means another desktop or minimized - still usable."""
+    """Chat rooms open in their own window, on any desktop. send_message also reaches rooms that
+    are not listed here (it opens them); on_screen=false only means another desktop or minimized."""
     if kakao_pid() is None:
         raise KakaoError("KakaoTalk is not running")
-    return _rooms()
+    with _lock():
+        return _rooms()
+
+
+def _open_room_or_raise(room: str) -> Chat:
+    chat = Chat(room, CACHE)
+    if chat.window() is None:
+        open_chat(room, CACHE)
+        chat = Chat(room, CACHE)
+    return chat
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 @_tool_errors
 def read_messages(room: str, limit: int = 20) -> dict:
-    """Recent messages of an open room, oldest first. dir: in (received) / out (sent by me).
-    kind=media is a sticker or photo; reactions are not exposed - use capture_room to see them."""
+    """Recent messages of a room, oldest first (opens the room if it has no window).
+    dir: in (received) / out (sent by me). kind=media is a sticker or photo; reactions are
+    not exposed - use capture_room to see them."""
     room = nfc(room)
     limit = max(1, min(int(limit), 60))
     with _lock():
-        chat = Chat(room, CACHE)
-        if chat.window() is None:
-            raise _not_open(room)
+        chat = _open_room_or_raise(room)
         msgs = chat.messages(last_rows=limit + 5)[-limit:]
     return {"room": room, "messages": [{"dir": m.dir, "kind": m.kind, "text": m.text} for m in msgs]}
 
@@ -246,13 +195,11 @@ def read_messages(room: str, limit: int = 20) -> dict:
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 @_tool_errors
 def capture_room(room: str, full: bool = False) -> list:
-    """Background capture of an open chat window (no activation). full=false keeps the band
-    around the latest messages."""
+    """Background capture of a chat window (no activation; opens the room if it has no window).
+    full=false keeps the band around the latest messages."""
     room = nfc(room)
     with _lock():
-        chat = Chat(room, CACHE)
-        if chat.window() is None:
-            raise _not_open(room)
+        chat = _open_room_or_raise(room)
         img = _capture(chat, full)
     if img is None:
         raise KakaoError(f"window server has no window titled {room!r}")
@@ -262,9 +209,10 @@ def capture_room(room: str, full: bool = False) -> list:
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
 @_tool_errors
 def open_room(room: str) -> dict:
-    """Open a chat in its own window from KakaoTalk's chat list (search + context menu 채팅방 열기,
-    AX only). Needs the main window on the desktop being shown and the user's hands off the
-    keyboard and mouse for 2s; otherwise it refuses and says why. Opening marks the room as read."""
+    """Open a chat in its own window (search + context menu 채팅방 열기, AX only). If KakaoTalk is on
+    another desktop it is brought forward for about a second, after the keyboard and mouse rest,
+    and the previous app is handed back. send_message does this by itself; call this only to
+    open a room ahead of time. Opening marks the room as read."""
     with _lock():
         return open_chat(nfc(room), CACHE)
 
@@ -272,28 +220,31 @@ def open_room(room: str) -> dict:
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                       idempotent_hint=False, open_world_hint=True),
           structured_output=False)
-def send_message(room: str, text: str, open_if_needed: bool = False, allow_repeat: bool = False,
+def send_message(room: str, text: str, open_if_needed: bool = True, allow_repeat: bool = False,
                  capture: bool = True) -> list:
-    """Send a text message to a room addressed by its exact chat window title.
+    """Send a text message to a room addressed by its chat window title (see the server
+    instructions for the name rule). A room without a window is opened first.
 
     Returns a JSON status line - sent / not_sent / uncertain / refused - and, by default, a
-    capture of the chat. Never resend after 'uncertain'."""
+    capture of the chat. Refused when the room's newest outgoing bubble already shows this text
+    (a repeat across tools); allow_repeat=true sends it anyway. Never resend after 'sent' or
+    'uncertain'."""
     room, text = nfc(room), nfc(text).strip()
     with _lock():
         result: dict = {"room": room, "chars": len(text)}
         try:
-            _guard(room, text, allow_repeat)
+            _guard(room, text)
             chat = Chat(room, CACHE)
             if chat.window() is None:
                 if not open_if_needed:
-                    raise _not_open(room)
+                    raise KakaoError(f"no chat window titled exactly {room!r} is open (open_if_needed=false)")
                 result["opened"] = open_chat(room, CACHE)
-            result.update(deliver(chat, text))
+                chat = Chat(room, CACHE)
+            result.update(deliver(chat, text, allow_repeat=allow_repeat))
         except KakaoError as e:
             result.update(status="refused", detail=str(e))
-        if result["status"] in ("sent", "uncertain"):
-            _sent.append((time.time(), room, text))
-        _log(tool="send_message", room=room, text=text[:200], status=result["status"], detail=result.get("detail"))
+        _log(tool="send_message", room=room, text=text[:200], status=result["status"],
+             verified_by=result.get("verified_by"), detail=result.get("detail"))
         out: list = [json.dumps(result, ensure_ascii=False)]
         if capture and result["status"] != "refused":
             try:
@@ -346,7 +297,9 @@ def run_daemon() -> None:
     # Ask once, so the launcher app shows up in System Settings > Privacy & Security.
     AS.AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
     Quartz.CGRequestScreenCaptureAccess()
-    app = _BearerGate(mcp.streamable_http_app(host="127.0.0.1"), _token(create=True))
+    # Stateless: no session ids, so a restarted daemon keeps serving bridges that were connected.
+    app = _BearerGate(mcp.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=True),
+                      _token(create=True))
     uvicorn.run(app, host="127.0.0.1", port=HTTP_PORT, log_level="warning")
 
 
@@ -361,8 +314,11 @@ def run_bridge() -> None:
     from mcp.server.stdio import stdio_server
 
     async def relay():
+        import httpx2
         headers = {"Authorization": f"Bearer {_token(create=False)}"}
-        async with create_mcp_http_client(headers=headers) as http, \
+        # Opening a room can wait up to 30 s for the user to rest, then send and verify.
+        timeout = httpx2.Timeout(300.0, connect=10.0)
+        async with create_mcp_http_client(headers=headers, timeout=timeout) as http, \
                 streamable_http_client(f"http://127.0.0.1:{HTTP_PORT}/mcp", http_client=http) as (r_up, w_up), \
                 stdio_server() as (r_in, w_in):
             async with anyio.create_task_group() as tg:
@@ -373,8 +329,13 @@ def run_bridge() -> None:
                             continue
                         await dst.send(msg)
                     tg.cancel_scope.cancel()
+                async def orphan_watch(parent=os.getppid()):
+                    while os.getppid() == parent:     # reparented to launchd = client died
+                        await anyio.sleep(2)
+                    tg.cancel_scope.cancel()
                 tg.start_soon(pump, r_in, w_up, "client->daemon")
                 tg.start_soon(pump, r_up, w_in, "daemon->client")
+                tg.start_soon(orphan_watch)
 
     anyio.run(relay)
 
