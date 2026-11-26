@@ -1,3 +1,18 @@
+## 2026-11-26 — kakao-mcp 공개, 상시 서버와 중계
+
+- 변경 파일: `kkt/mcp_server.py`(`--http`·`--bridge`·프로세스 간 잠금), `bin/kkt-mcp`(심볼릭 링크 대응), `launcher/`, `scripts/install-daemon.sh`, `personas/example.md`, `.gitignore`, `kkt/cli.py`·`kkt/wrapped.py`(공개용 문구), `README.md`
+- 요약: GitHub `bsiku3622/kakao-mcp`로 공개. 맥에 상시 서버를 하나 두고(127.0.0.1, 토큰), 모든 클라이언트는 `kakao-mcp --bridge`로 붙는다. 다른 기기는 SSH로 그 중계를 실행한다.
+
+⚠️ **공개 전에 사적 내용을 걷어냈다.** 친구용 페르소나 파일, Wrapped 화면의 친구 별명 문구, 옛 로그의 별명이 공개 대상에 있었다. `personas/*`는 예시만 빼고 무시하고, Wrapped 문구는 중립으로 바꿨다. 그 결과 **봇 기본 페르소나가 `personas/example.md`로 바뀌었으니, 친구 방 봇은 `--persona`로 그 파일을 직접 지정해야 한다.**
+
+포트를 네트워크에 여는 대신 로컬 서버 + 중계를 고른 이유는 세 가지다. 맥 방화벽이 서명된 앱 자동 허용을 꺼 둬서 새 포트는 따로 허용해야 하고, 같은 사설망에 다른 사람 기기도 붙어 있으며, 카톡을 만지는 프로세스가 하나여야 동시 전송 충돌이 없다. 중계는 메시지를 해석하지 않고 `stdio_server`와 `streamable_http_client`의 스트림을 양방향으로 그대로 잇기만 해서, 초기화·알림·이미지 결과가 그대로 지나간다.
+
+⚠️ **launchd로 띄운 프로세스의 권한은 그 프로세스 자신에게 붙는다.** 그래서 서버를 작은 Swift 런처 앱(Kakao MCP)의 자식으로 띄워, 손쉬운 사용·화면 기록 권한을 런처 하나에만 주게 했다. 귀속은 `responsibility_get_pid_responsible_for_pid`로 확인했다(서버 Python → 런처). 런처를 다시 빌드하면 ad-hoc 서명이 바뀌어 권한을 다시 줘야 할 수 있다. 중계는 카톡을 건드리지 않으니 SSH 세션처럼 권한이 없는 곳에서도 돈다.
+
+⚠️ **윈도우 기본 `ssh.exe`(Win32-OpenSSH)는 파이프 stdin을 열린 동안 원격으로 넘기지 않는다.** 원격 `cat`조차 10초 동안 응답이 없었고, MCP 클라이언트는 30초 뒤 시간 초과로 끊었다. Git for Windows의 `usr\bin\ssh.exe`는 같은 설정·키로 한 줄씩 넘기고, 초기화 응답이 약 1초에 왔다.
+
+`mcp` 2.x에서 상시 서버는 `streamable_http_app(host="127.0.0.1")`을 토큰 검사 ASGI로 감싸 uvicorn으로 띄운다. 토큰이 없으면 401이고, 사설망 주소로는 닿지 않는 것을 확인했다. 중계에서는 httpx와 `mcp.client`의 INFO 로그가 요청마다 stderr에 찍혀서 WARNING으로 올렸다.
+
 ## 2026-11-26 — MCP 서버 추가, 전송 방식 세 가지 비교
 
 - 변경 파일: `kkt/mcp_server.py`, `kkt/open_chat.py`, `bin/kkt-mcp`, `requirements.txt`(`mcp==2.3.0`), `README.md`
