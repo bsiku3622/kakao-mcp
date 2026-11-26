@@ -80,6 +80,12 @@ Another machine reaches the same daemon over SSH, with no port to open:
 claude mcp add kakao -s user -- ssh -T -o BatchMode=yes mac /Users/you/.local/bin/kakao-mcp --bridge
 ```
 
+On Windows, use Git for Windows' `C:\Program Files\Git\usr\bin\ssh.exe`, not
+`C:\Windows\System32\OpenSSH\ssh.exe`: the built-in client does not forward
+piped stdin while it stays open, so an MCP client gets no reply and times out.
+The same command works in Claude Desktop's `claude_desktop_config.json` and in
+Codex's `config.toml` (`command = 'C:\Program Files\Git\usr\bin\ssh.exe'`).
+
 ### Without the daemon
 
 `bin/kkt-mcp` with no flag is a plain stdio server that drives KakaoTalk itself.

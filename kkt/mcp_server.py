@@ -353,7 +353,7 @@ def run_bridge() -> None:
     import logging
 
     import anyio
-    for name in ("httpx", "httpx2", "httpcore"):   # one INFO line per request otherwise
+    for name in ("httpx", "httpx2", "httpcore", "mcp.client"):   # INFO lines per request otherwise
         logging.getLogger(name).setLevel(logging.WARNING)
     from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
     from mcp.server.stdio import stdio_server
