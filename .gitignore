@@ -1,0 +1,9 @@
+.venv/
+data/
+__pycache__/
+*.pyc
+.DS_Store
+build/
+# personas are personal; only the example is published
+personas/*
+!personas/example.md

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Run the kkt MCP server from its project venv. Works through a symlink, so a
+# space-free link such as ~/.local/bin/kakao-mcp can be called over SSH.
+#   kkt-mcp            stdio server (this process drives KakaoTalk)
+#   kkt-mcp --http     local daemon on 127.0.0.1 (run it from the Kakao MCP launcher)
+#   kkt-mcp --bridge   stdio <-> local daemon relay (no KakaoTalk permissions needed)
+SELF="$(readlink -f "$0")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -m kkt.mcp_server "$@"

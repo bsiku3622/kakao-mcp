@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run the kkt CLI from its project venv without changing the caller's cwd.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -m kkt "$@"
