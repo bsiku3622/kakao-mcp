@@ -26,13 +26,13 @@ permission (a terminal that already has them is enough).
 | --- | --- |
 | `bin/kkt rooms` | List open KakaoTalk windows |
 | `bin/kkt read ROOM [-n 20]` | Print recent messages (`<` incoming, `>` outgoing) |
-| `bin/kkt send ROOM TEXT` | Send a message and verify it appears |
+| `bin/kkt send ROOM TEXT [--allow-repeat]` | Send a message and print the verdict (`sent bubble …`) |
 | `bin/kkt snap ROOM [--full]` | Capture the chat window in the background (reactions and stickers live only here) |
-| `bin/kkt watch ROOM` | One tab-separated line per burst of new activity, with a capture path |
+| `bin/kkt watch ROOM [--skip-backlog]` | One tab-separated line per burst of new activity, with a capture path; `--skip-backlog` starts from what is on screen instead of releasing unanswered messages first |
 | `bin/kkt bot ROOM [--persona FILE] [--dry-run]` | Persona bot that answers each burst through a tool-less `claude -p` (`personas/example.md` by default; other files in `personas/` stay out of git) |
 | `bin/kkt wrapped ROOM` | Render a one-page "우정 Wrapped" HTML from the archive |
 
-`ROOM` is the chat window title. The chat must be open in its own window.
+`ROOM` is the chat window title. The CLI needs the chat open in its own window; the MCP server opens it.
 
 ## MCP server
 
@@ -58,8 +58,12 @@ daemon at login through launchd (`com.bsiku3622.kakao-mcp`). Then allow
 **Screen & System Audio Recording**. Rebuilding the launcher changes its ad-hoc
 signature, so macOS may ask again.
 
+The daemon serves stateless HTTP, so restarting it (`launchctl kickstart -k
+gui/$UID/com.bsiku3622.kakao-mcp`) does not break bridges that are connected.
+
 Clients start `kakao-mcp --bridge`, a stdio relay to the daemon that reads the
-token itself and needs no permissions:
+token itself and needs no permissions. It exits when the client that started it
+goes away:
 
 ```sh
 # Claude Code on the Mac
@@ -94,28 +98,53 @@ enough). A cross-process lock keeps it and the daemon from typing at once.
 
 | Tool | What it does |
 | --- | --- |
-| `kakao_status` | Running, permissions, screen lock, open rooms, guardrail settings |
-| `list_rooms` | Chat rooms open in their own window (any desktop) |
+| `kakao_status` | Running, permissions, screen lock, open rooms |
+| `list_rooms` | Chat rooms open in their own window (any desktop; windows without a composer are left out) |
 | `read_messages(room, limit)` | Recent messages, `in` / `out`, `text` / `media` |
 | `capture_room(room, full)` | Background capture of the chat window |
-| `open_room(room)` | Opens a chat from the chat list: search via `AXSelectedText`, then the row's context menu item `채팅방 열기` |
-| `send_message(room, text, …)` | Sends, verifies, returns `sent` / `not_sent` / `uncertain` / `refused` plus a capture |
+| `open_room(room)` | Opens a chat ahead of time (the other tools open rooms by themselves) |
+| `send_message(room, text, …)` | Opens the room if needed, sends, verifies, returns `sent` / `not_sent` / `uncertain` / `refused` plus a capture |
 
-A send counts as `sent` only when an outgoing bubble with the exact text shows up
-among rows that did not exist before `AXPress`, so an identical earlier message
-cannot pass. `not_sent` means the text was still in the composer (it is cleared).
-`uncertain` means neither; the server tells the model not to resend.
+A room is named as the chat list shows it, without a `팀채팅, ` / `오픈채팅, ` /
+`나와의 채팅, ` prefix. When a name matches no single row, the error lists the rooms
+KakaoTalk's search found.
 
-Guardrails: `KKT_ALLOWED_ROOMS` (comma-separated allowlist), `KKT_MAX_PER_HOUR`
-(default 30), `KKT_MIN_INTERVAL` (default 2 s), `KKT_REPEAT_WINDOW` (same text to
-the same room, default 120 s), a 1000-character limit, `data/STOP`, and drafts are
-never overwritten. Every send attempt is logged to `data/mcp-log.jsonl`.
+### Verdicts
 
-`open_room` follows openkakao-cli's context-menu route
-([JungHoonGhae/openkakao-cli](https://github.com/JungHoonGhae/openkakao-cli), MIT).
-The menu only appears while KakaoTalk's main window is on a desktop being shown
-and the keyboard and mouse have been idle for 2 s, so otherwise it refuses.
-Sending to a room that is already open works from any desktop.
+`sent` comes in two kinds. `verified_by: bubble` means more outgoing bubbles show
+the text in the newest rows than before the press. Text is compared after
+normalising whitespace and line breaks, by its opening 40 characters, so bubbles
+folded behind 전체보기 (about 500 characters) and messages followed by a link card
+still verify. `verified_by: composer_cleared` means no bubble matched in time, but
+KakaoTalk emptied the composer, which it does only when it sends. `not_sent` means
+the text stayed in the composer (it is cleared). `uncertain` means the composer now
+holds other text. The server tells the model never to resend after `sent` or
+`uncertain`.
+
+A send is refused when the room's newest outgoing bubble already shows the same
+text, which catches a repeat made through another tool after an interrupted call;
+`allow_repeat=true` sends it anyway. Drafts are never overwritten. Optional
+switches: `KKT_ALLOWED_ROOMS` (comma-separated allowlist) and `data/STOP`. Every
+send attempt is logged to `data/mcp-log.jsonl`. The CLI (`kkt send`) and the bot go
+through the same code (`kkt/deliver.py`).
+
+### Opening a room that has no window
+
+KakaoTalk 26.10.0 exposes one element-scoped way to open a chat: the chat row's
+context menu item `채팅방 열기` (rows, cells and their buttons reject `AXPress`,
+`AXOpen`, `AXConfirm` and `AXShowDefaultUI`, and the search field's `AXConfirm` opens
+nothing). The route follows openkakao-cli
+([JungHoonGhae/openkakao-cli](https://github.com/JungHoonGhae/openkakao-cli), MIT):
+filter the list with `AXSelectedText` (setting `AXValue` does not filter), take the
+one row named exactly so, `AXShowMenu` on its cell (the menu shows up as a child of
+the cell), and `AXPress` the item.
+
+The menu is only drawn while the main window is on a desktop being shown. When it
+is not, the app is brought forward with `AXFrontmost` (macOS then shows its
+desktop), the room is opened, and the app that was in front is handed back the
+same way, checked until it sticks - about a second, and only after the keyboard and
+mouse have rested for 1.5 s. A room stays open afterwards, so later sends cause no
+visible change.
 
 ## How it works
 
@@ -123,7 +152,9 @@ Sending to a room that is already open works from any desktop.
   found via `AXFocusedWindow`/`AXMainWindow` or, failing that, the private
   `_AXUIElementCreateWithRemoteToken` scan used by alt-tab. The element id is cached
   in `data/winid_cache.json`.
-- **Direction.** Incoming bubbles hug the left edge, outgoing ones the right.
+- **Direction.** A bubble is outgoing when it sits closer to the right edge than the
+  left, incoming otherwise; rows with nearly equal margins are separators. Fixed
+  margins broke once a scroll bar widened the right margin.
 - **Reactions and stickers.** Reaction emoji are not exposed through AX; a reaction
   shows up as a change in the row's height and buttons, and `snap` shows which one.
 - **Bursts.** New incoming messages are batched until the chat has been quiet for a
