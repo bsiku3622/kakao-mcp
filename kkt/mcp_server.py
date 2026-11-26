@@ -206,6 +206,8 @@ def kakao_status() -> dict:
     return {
         "running": pid is not None,
         "accessibility_trusted": bool(AS.AXIsProcessTrusted()),
+        # Without it window titles read empty, so no room is listed. Re-read at process start.
+        "screen_recording": bool(__import__("Quartz").CGPreflightScreenCaptureAccess()),
         "screen_locked": screen_locked(),
         "main_window_on_screen": bool(main and main["onscreen"]),
         "open_rooms": _rooms() if pid else [],
