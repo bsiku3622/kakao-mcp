@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import os
 import struct
-import time
 import unicodedata
 from dataclasses import dataclass
 
@@ -31,10 +30,12 @@ objc.loadBundleFunctions(NSBundle.bundleWithPath_(_HISERVICES), _fns,
                          [("_AXUIElementCreateWithRemoteToken", b"^{__AXUIElement=}@")])
 _remote_token = _fns.get("_AXUIElementCreateWithRemoteToken")
 
-# Bubble geometry (points from the window edge): incoming bubbles hug the left
-# (~55-60pt), outgoing ones the right (~18pt). Centered rows are separators.
-_IN_MAX_LEFT = 75
-_OUT_MAX_RIGHT = 30
+# Bubble direction comes from which window edge the bubble sits closer to:
+# outgoing bubbles hang right (timestamp on their left), incoming ones left, next
+# to the profile picture (timestamp on their right). Fixed margins broke - with a
+# scroll bar the outgoing right margin grew from ~18pt to 35pt and every sent
+# bubble was dropped. Rows whose margins nearly match are centred separators.
+_CENTER_TOLERANCE = 12
 
 
 class KakaoError(RuntimeError):
@@ -114,6 +115,27 @@ def _first(e, pred):
             return False
         if pred(x):
             found.append(x)
+            return False
+    _walk(e, visit)
+    return found[0] if found else None
+
+
+def find(e, pred, skip_roles=("AXTable",)):
+    """Like _first, but never descends into the transcript table (it can still match it).
+
+    The composer and the 전송 button come after the table in tree order, so a plain
+    depth-first search walks every message row first - 52 s for a long room on
+    KakaoTalk 26.10.0, against 0.01 s when the table is skipped.
+    """
+    found = []
+
+    def visit(x):
+        if found:
+            return False
+        if pred(x):
+            found.append(x)
+            return False
+        if attr(x, "AXRole") in skip_roles:
             return False
     _walk(e, visit)
     return found[0] if found else None
@@ -229,44 +251,20 @@ class Chat:
             for kind, text, f in items:
                 left = f[0] - wf[0]
                 right = wf[0] + wf[2] - (f[0] + f[2])
-                d = "in" if left < _IN_MAX_LEFT else "out" if right < _OUT_MAX_RIGHT else None
+                d = None if abs(left - right) <= _CENTER_TOLERANCE else "out" if right < left else "in"
                 if d:
                     out.append(Message(d, kind, text, (round(rf[3]) if rf else 0, buttons)))
         return out
 
     # -- sending -------------------------------------------------------------
-    def send(self, text: str, verify_timeout: float = 5.0) -> None:
-        """Type into the input field via AXValue and AXPress the send button."""
+    def send(self, text: str, allow_repeat: bool = False) -> dict:
+        """Send through kkt.deliver (the same path as the MCP server). Returns its verdict
+        when the message went out; raises KakaoError when it did not or may not have."""
+        from .deliver import deliver   # deliver imports this module
         text = text.strip()
         if not text:
             raise KakaoError("empty message")
-        win = self.require_window()
-        field = _first(win, lambda e: attr(e, "AXRole") == "AXTextArea"
-                       and attr(e, "AXDescription") == "메시지 입력")
-        if field is None:
-            raise KakaoError("message input field not found")
-        draft = attr(field, "AXValue") or ""
-        if draft.strip():
-            raise KakaoError(f"input field already has a draft, not overwriting: {draft[:60]!r}")
-        if AS.AXUIElementSetAttributeValue(field, "AXValue", text) != 0:
-            raise KakaoError("could not set the input field value")
-        button = None
-        for _ in range(15):
-            time.sleep(0.2)
-            b = _first(win, lambda e: attr(e, "AXRole") == "AXButton" and attr(e, "AXTitle") == "전송")
-            if b is not None and attr(b, "AXEnabled"):
-                button = b
-                break
-        if button is None:
-            raise KakaoError("send button did not enable; text left in the input field")
-        # A busy KakaoTalk can answer AXPress with a timeout error and still perform
-        # it, so the error alone is not trusted: the chat itself is checked.
-        press_err = AS.AXUIElementPerformAction(button, "AXPress")
-        deadline = time.time() + verify_timeout
-        while time.time() < deadline:
-            time.sleep(0.4)
-            outs = [m.text for m in self.messages(win, last_rows=10) if m.dir == "out"]
-            if outs and outs[-1].strip() == text:
-                return
-        raise KakaoError(f"message did not show up as the last outgoing bubble (AXPress err={press_err}); "
-                         "check the input field")
+        result = deliver(self, text, allow_repeat=allow_repeat)
+        if result["status"] != "sent":
+            raise KakaoError(f"{result['status']}: {result['detail']}")
+        return result

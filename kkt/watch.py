@@ -37,13 +37,16 @@ def appended(prev: list[Message], cur: list[Message], tail: int = 5) -> int | No
 
 class Watcher:
     def __init__(self, chat: Chat, quiet: float = 4.0, poll: float = 2.0, archive: str | None = None,
-                 stop_file: str | None = None, full_every: float = 30.0, scan_rows: int = 25):
+                 stop_file: str | None = None, full_every: float = 30.0, scan_rows: int = 25,
+                 backlog: bool = True):
         """Polls only the row count every `poll` seconds; the expensive row walk runs
         when the count changes and every `full_every` seconds (to catch reactions).
         KakaoTalk answers AX on its main thread, and walking 40 rows every 3s kept
-        it at ~80% CPU."""
+        it at ~80% CPU. backlog=False starts from what is on screen instead of
+        releasing the unanswered incoming messages as the first burst."""
         self.chat, self.quiet, self.poll, self.archive = chat, quiet, poll, archive
         self.stop_file, self.full_every, self.scan_rows = stop_file, full_every, scan_rows
+        self.backlog = backlog
         self.prev: list[Message] | None = None
         self._rows = -1
         self._last_full = 0.0
@@ -109,7 +112,7 @@ class Watcher:
                         if m.dir == "out":
                             break
                         pending.insert(0, m)
-                    if pending:
+                    if pending and self.backlog:
                         incoming += pending
                         last = 0.0
                     continue

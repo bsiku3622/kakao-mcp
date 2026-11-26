@@ -32,8 +32,8 @@ def cmd_read(a):
 
 
 def cmd_send(a):
-    Chat(a.room, CACHE).send(a.text)
-    print("sent")
+    r = Chat(a.room, CACHE).send(a.text, allow_repeat=a.allow_repeat)
+    print(r["status"], r.get("verified_by", ""), r["detail"], sep="\t")
 
 
 def cmd_snap(a):
@@ -48,7 +48,8 @@ def cmd_snap(a):
 def cmd_watch(a):
     """Tab-separated event lines, one per burst - made for Claude Code's Monitor tool."""
     chat = Chat(a.room, CACHE)
-    w = Watcher(chat, quiet=a.quiet, archive=os.path.join(DATA, "archive", f"{safe(a.room)}.jsonl"),
+    w = Watcher(chat, quiet=a.quiet, backlog=not a.skip_backlog,
+                archive=os.path.join(DATA, "archive", f"{safe(a.room)}.jsonl"),
                 stop_file=os.path.join(DATA, "STOP"))
     for ev in w.events():
         if ev.type != "burst":
@@ -92,12 +93,17 @@ def main(argv=None):
     s = sub.add_parser("read", help="print recent messages of an open chat window")
     s.add_argument("room"); s.add_argument("-n", type=int, default=20); s.set_defaults(fn=cmd_read)
     s = sub.add_parser("send", help="send a message to an open chat window")
-    s.add_argument("room"); s.add_argument("text"); s.set_defaults(fn=cmd_send)
+    s.add_argument("room"); s.add_argument("text")
+    s.add_argument("--allow-repeat", action="store_true", help="send even if the newest outgoing bubble shows this text")
+    s.set_defaults(fn=cmd_send)
     s = sub.add_parser("snap", help="capture a chat window in the background")
     s.add_argument("room"); s.add_argument("-o", "--out"); s.add_argument("--full", action="store_true")
     s.set_defaults(fn=cmd_snap)
     s = sub.add_parser("watch", help="print one line per burst of new activity")
-    s.add_argument("room"); s.add_argument("--quiet", type=float, default=4.0); s.set_defaults(fn=cmd_watch)
+    s.add_argument("room"); s.add_argument("--quiet", type=float, default=4.0)
+    s.add_argument("--skip-backlog", action="store_true",
+                   help="start from what is on screen instead of releasing unanswered messages first")
+    s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("bot", help="persona bot that replies through a tool-less claude -p")
     s.add_argument("room"); s.add_argument("--persona", default=os.path.join(ROOT, "personas", "example.md"))
     s.add_argument("--model", default="claude-haiku-5-5")
