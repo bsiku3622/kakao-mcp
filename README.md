@@ -203,6 +203,13 @@ blank while the session is not drawing (RDP minimized or disconnected), so
 verdicts never depend on them; while you sit at the Windows session, opening a
 room may bring its window to the front.
 
+## Agent skill
+
+`skills/kakao/SKILL.md` tells an agent how to use these tools: picking the signed-in
+server, naming rooms, reporting verdicts without ever resending, and the limits of
+each platform. Copy it to `~/.claude/skills/kakao/` for Claude Code or
+`~/.codex/skills/kakao/` for Codex, and add your own voice or tone rules there.
+
 ## How it works
 
 - **Finding the window.** KakaoTalk leaves `AXWindows` empty, so the chat window is

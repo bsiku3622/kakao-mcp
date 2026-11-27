@@ -1,3 +1,10 @@
+## 2026-11-27 — 공개용 스킬, v0.1.0 릴리스
+
+- 변경 파일: `skills/kakao/SKILL.md`(새 파일), `README.md`
+- 요약: 저장소에 사용법만 담은 스킬을 넣고 첫 릴리스 v0.1.0을 냈다.
+
+공개용 스킬은 사용법(서버 고르기, 방 이름, 결과 처리, 재전송 금지, 읽기, 한계)만 담는다. 인사말·말투·친구 페르소나 같은 개인 규칙은 각자 자기 스킬에 덧붙이도록 README에 적었고, 개인 스킬은 설정 저장소에 따로 있다. 저장소 문서 규칙에 맞춰 영어로 썼다.
+
 ## 2026-11-27 — 윈도우판 (창 메시지만으로 보내기·읽기·방 열기)
 
 - 변경 파일: `kkt/win/`(winapi·kakao·server, 새 파일), `kkt/transport.py`·`kkt/textmatch.py`(맥 서버에서 공용 부분 분리), `kkt/mcp_server.py`(`platform`·`logged_in`), `bin/kakao-mcp-win.cmd`, `scripts/install-daemon-win.ps1`, `requirements-win.txt`, `README.md`
