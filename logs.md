@@ -1,3 +1,14 @@
+## 2026-11-27 — Swift 중계, 맥 클라이언트 HTTP 직결
+
+- 변경 파일: `bridge/main.swift`·`bridge/build.sh`(새 파일), `bin/kkt-mcp`(`--bridge`면 Swift 중계 우선), `scripts/install-daemon.sh`, `README.md`
+- 요약: 세션마다 하나씩 뜨는 Python 중계(22 MB, 시작 0.5~0.65초)를 Swift 중계(7 MB, 0.04초)로 바꿨다. 맥 Claude Code는 중계 없이 HTTP로 직접 붙인다.
+
+Python에서 Swift로 전부 갈아엎는 안은 접었다. 평상시 CPU는 0.1%라 줄일 게 없고, 일할 때 시간은 카톡이 AX 요청을 메인 스레드로 처리하는 데서 나온다. 줄어드는 건 상시 서버의 메모리 수십 MB인데, 실측으로 맞춘 동작을 다시 검증해야 하는 위험이 더 컸다. 세션 수만큼 곱해지는 중계만 바꿨다.
+
+⚠️ 처음엔 `URLSession`으로 짰더니 CFNetwork가 올라와 13.9 MB였다. 상대가 늘 `127.0.0.1`이라 소켓을 직접 열고 `Connection: close`로 요청해서, 서버가 닫을 때까지 읽는다. 응답 길이를 파싱할 필요가 없고 6.7 MB가 됐다. 상시 서버가 세션 없는 JSON 응답이라 중계는 줄마다 POST 하나면 된다.
+
+맥 Codex는 HTTP 직결 대신 Swift 중계를 쓴다. Codex `config.toml`은 설정 저장소에 커밋되는 파일이라 토큰을 넣지 않았다. Claude Code의 `~/.claude.json`은 저장소 밖이라 토큰을 넣었다.
+
 ## 2026-11-27 — 접힌 긴 메시지 전문 읽기
 
 - 변경 파일: `kkt/ax.py`(`Message.more`, `Chat.full_text`), `kkt/mcp_server.py`(`read_messages(full=True)`), `kkt/cli.py`(`kkt read --folded`), `README.md`

@@ -6,4 +6,8 @@
 #   kkt-mcp --bridge   stdio <-> local daemon relay (no KakaoTalk permissions needed)
 SELF="$(readlink -f "$0")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+# The Swift relay (bridge/, about 7 MB) replaces the Python one (about 22 MB) when built.
+if [ "$1" = "--bridge" ] && [ -x "$ROOT/build/kakao-mcp-bridge" ]; then
+    exec "$ROOT/build/kakao-mcp-bridge" "$ROOT/data/http-token"
+fi
 PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -m kkt.mcp_server "$@"

@@ -8,6 +8,7 @@ LABEL="com.bsiku3622.kakao-mcp"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 APP="$(launcher/build.sh)"
+bridge/build.sh >/dev/null
 mkdir -p "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$ROOT/data"
 ln -sf "$ROOT/bin/kkt-mcp" "$HOME/.local/bin/kakao-mcp"
 

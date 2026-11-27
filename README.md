@@ -52,8 +52,9 @@ on the network, and one process serializes every KakaoTalk operation.
 scripts/install-daemon.sh
 ```
 
-This builds `build/Kakao MCP.app`, links `~/.local/bin/kakao-mcp`, and starts the
-daemon at login through launchd (`com.bsiku3622.kakao-mcp`). Then allow
+This builds `build/Kakao MCP.app` and the relay `build/kakao-mcp-bridge`, links
+`~/.local/bin/kakao-mcp`, and starts the daemon at login through launchd
+(`com.bsiku3622.kakao-mcp`). Then allow
 **Kakao MCP** in System Settings → Privacy & Security → **Accessibility** and
 **Screen & System Audio Recording**. Rebuilding the launcher changes its ad-hoc
 signature, so macOS may ask again.
@@ -61,12 +62,21 @@ signature, so macOS may ask again.
 The daemon serves stateless HTTP, so restarting it (`launchctl kickstart -k
 gui/$UID/com.bsiku3622.kakao-mcp`) does not break bridges that are connected.
 
-Clients start `kakao-mcp --bridge`, a stdio relay to the daemon that reads the
-token itself and needs no permissions. It exits when the client that started it
-goes away:
+Clients on the Mac can talk HTTP to the daemon directly, with no relay process:
 
 ```sh
-# Claude Code on the Mac
+claude mcp add --transport http kakao http://127.0.0.1:8799/mcp \
+  --header "Authorization: Bearer $(cat data/http-token)" -s user
+```
+
+Clients that only speak stdio, or whose config file is versioned and should not
+hold the token, start `kakao-mcp --bridge` instead. That runs the Swift relay
+(`bridge/main.swift`, about 7 MB resident and 0.04 s to start, against 22 MB and
+0.5 s for the Python fallback): one POST per JSON-RPC line over a plain localhost
+socket, replies written back one per line, requests in parallel. It reads the
+token itself, needs no permissions, and exits when its client goes away:
+
+```sh
 claude mcp add kakao -s user -- ~/.local/bin/kakao-mcp --bridge
 ```
 
