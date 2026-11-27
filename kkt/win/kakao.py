@@ -91,11 +91,13 @@ def _blank(text: str) -> bool:
 
 # -- reading -----------------------------------------------------------------
 def copy_all(room) -> str:
-    """The loaded conversation as KakaoTalk copies it. The clipboard is put back."""
+    """The loaded conversation as KakaoTalk copies it. The message list exposes no text
+    through MSAA or UI Automation, so the clipboard is the only way in; every format on
+    it is saved first and put back after."""
     lst = w.first_descendant(room, MESSAGE_LIST)
     if lst is None:
         raise KakaoError("message list not found in the chat window")
-    saved, seq = w.clipboard_text(), w.clipboard_seq()
+    saved, seq = w.clipboard_snapshot(), w.clipboard_seq()
     try:
         w.post_key(lst, ord("A"), (w.VK_CONTROL,))
         time.sleep(0.15)
@@ -107,7 +109,7 @@ def copy_all(room) -> str:
             raise KakaoError("KakaoTalk did not copy the conversation")
         return w.clipboard_text() or ""
     finally:
-        w.set_clipboard_text(saved)
+        w.clipboard_restore(saved)
 
 
 def parse(raw: str, me: set[str]) -> list[dict]:

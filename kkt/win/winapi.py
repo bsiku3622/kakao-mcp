@@ -297,6 +297,57 @@ def clipboard_seq() -> int:
     return user32.GetClipboardSequenceNumber()
 
 
+# GDI-handle formats are not memory blocks; Windows rebuilds CF_BITMAP from CF_DIB.
+_GDI_FORMATS = {2, 3, 9, 14, 0x0080, 0x0082, 0x0083, 0x008E}
+_sig(user32.EnumClipboardFormats, [W.UINT], W.UINT)
+_sig(user32.RegisterClipboardFormatW, [W.LPCWSTR], W.UINT)
+_sig(kernel32.GlobalSize, [W.HGLOBAL], ctypes.c_size_t)
+
+
+def clipboard_snapshot() -> list[tuple[int, bytes]]:
+    """Every memory-block format on the clipboard (text, HTML, RTF, images as DIB, files)."""
+    out: list[tuple[int, bytes]] = []
+    if not _open_clipboard():
+        return out
+    try:
+        fmt = 0
+        while True:
+            fmt = user32.EnumClipboardFormats(fmt)
+            if not fmt:
+                break
+            if fmt in _GDI_FORMATS or 0x0300 <= fmt <= 0x03FF:
+                continue
+            h = user32.GetClipboardData(fmt)
+            size = kernel32.GlobalSize(h) if h else 0
+            if not size:
+                continue
+            p = kernel32.GlobalLock(h)
+            if p:
+                out.append((fmt, ctypes.string_at(p, size)))
+                kernel32.GlobalUnlock(h)
+    finally:
+        user32.CloseClipboard()
+    return out
+
+
+def clipboard_restore(snapshot: list[tuple[int, bytes]]) -> None:
+    """Put a snapshot back, marked so clipboard history and cloud sync ignore the restore."""
+    if not _open_clipboard():
+        return
+    try:
+        user32.EmptyClipboard()
+        marks = [user32.RegisterClipboardFormatW(n) for n in
+                 ("ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard")]
+        for fmt, data in list(snapshot) + [(marks[0], b"\0"), (marks[1], b"\0\0\0\0"), (marks[2], b"\0\0\0\0")]:
+            h = kernel32.GlobalAlloc(GMEM_MOVEABLE, max(1, len(data)))
+            p = kernel32.GlobalLock(h)
+            ctypes.memmove(p, data, len(data))
+            kernel32.GlobalUnlock(h)
+            user32.SetClipboardData(fmt, h)
+    finally:
+        user32.CloseClipboard()
+
+
 # -- capture -----------------------------------------------------------------
 def capture_png(h, path: str) -> str:
     """PrintWindow into a bitmap - works for windows behind others or off the shown desktop."""

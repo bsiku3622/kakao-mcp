@@ -191,8 +191,10 @@ Measured on KakaoTalk for Windows 26.10.0:
   inserts a line break, and `Enter` with `VK_RETURN` marked down sends - but only
   after a synchronous `Enter` on the empty composer has primed it, so every send
   primes first.
-- **Read.** `Ctrl+A`, `Ctrl+C` to the message list, then the clipboard (put back
-  afterwards). Lines read `[sender] [오전|오후 H:MM] text`; messages of about 500+
+- **Read.** `Ctrl+A`, `Ctrl+C` to the message list, then the clipboard. The list
+  exposes no text through MSAA or UI Automation, so this is the only way in; every
+  clipboard format is saved first and put back after, marked so clipboard history
+  and cloud sync skip the restore. Sending never touches the clipboard. Lines read `[sender] [오전|오후 H:MM] text`; messages of about 500+
   characters come back cut and marked `folded`.
 - **Composer.** The placeholder `메시지 입력` is real text in the control.
 
