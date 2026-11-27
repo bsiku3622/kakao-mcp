@@ -27,8 +27,10 @@ def cmd_rooms(a):
 
 
 def cmd_read(a):
-    for m in Chat(a.room, CACHE).messages()[-a.n:]:
-        print(f"{'<' if m.dir == 'in' else '>'} {m.text}")
+    chat = Chat(a.room, CACHE)
+    for m in chat.messages()[-a.n:]:
+        text = chat.full_text(m) if m.folded and not a.folded else m.text
+        print(f"{'<' if m.dir == 'in' else '>'} {text}")
 
 
 def cmd_send(a):
@@ -91,7 +93,9 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("rooms", help="list open KakaoTalk windows").set_defaults(fn=cmd_rooms)
     s = sub.add_parser("read", help="print recent messages of an open chat window")
-    s.add_argument("room"); s.add_argument("-n", type=int, default=20); s.set_defaults(fn=cmd_read)
+    s.add_argument("room"); s.add_argument("-n", type=int, default=20)
+    s.add_argument("--folded", action="store_true", help="keep long messages folded instead of opening 전체보기")
+    s.set_defaults(fn=cmd_read)
     s = sub.add_parser("send", help="send a message to an open chat window")
     s.add_argument("room"); s.add_argument("text")
     s.add_argument("--allow-repeat", action="store_true", help="send even if the newest outgoing bubble shows this text")

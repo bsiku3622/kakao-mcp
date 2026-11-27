@@ -180,16 +180,19 @@ def _open_room_or_raise(room: str) -> Chat:
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 @_tool_errors
-def read_messages(room: str, limit: int = 20) -> dict:
+def read_messages(room: str, limit: int = 20, full: bool = True) -> dict:
     """Recent messages of a room, oldest first (opens the room if it has no window).
     dir: in (received) / out (sent by me). kind=media is a sticker or photo; reactions are
-    not exposed - use capture_room to see them."""
+    not exposed - use capture_room to see them. Long messages that KakaoTalk folds behind
+    전체보기 are read in full (each opens and closes a small viewer window for a moment);
+    full=false returns the folded text, which ends with "…"."""
     room = nfc(room)
     limit = max(1, min(int(limit), 60))
     with _lock():
         chat = _open_room_or_raise(room)
         msgs = chat.messages(last_rows=limit + 5)[-limit:]
-    return {"room": room, "messages": [{"dir": m.dir, "kind": m.kind, "text": m.text} for m in msgs]}
+        texts = [chat.full_text(m) if full and m.folded else m.text for m in msgs]
+    return {"room": room, "messages": [{"dir": m.dir, "kind": m.kind, "text": t} for m, t in zip(msgs, texts)]}
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))

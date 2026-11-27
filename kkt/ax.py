@@ -14,8 +14,9 @@ from __future__ import annotations
 import json
 import os
 import struct
+import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import AppKit
 import ApplicationServices as AS
@@ -36,6 +37,13 @@ _remote_token = _fns.get("_AXUIElementCreateWithRemoteToken")
 # scroll bar the outgoing right margin grew from ~18pt to 35pt and every sent
 # bubble was dropped. Rows whose margins nearly match are centred separators.
 _CENTER_TOLERANCE = 12
+
+# Long bubbles (about 500+ characters) are folded: their AXValue is cut and ends with
+# "…", and an untitled 전체보기 button about 35pt tall sits under the text. Pressing
+# it opens a viewer window titled "Window" that holds the whole text.
+FOLD_MARK = "…"
+VIEWER_TITLE = "Window"
+_SCAN_IDS = 3000      # remote-token element ids to try; a full scan takes well under a second
 
 
 class KakaoError(RuntimeError):
@@ -94,6 +102,11 @@ class Message:
     kind: str     # "text" | "media"
     text: str
     decor: tuple  # (row height, unlabeled button count) - changes when reactions appear
+    more: object = field(default=None, repr=False, compare=False)  # 전체보기 button of a folded bubble
+
+    @property
+    def folded(self) -> bool:
+        return self.more is not None
 
     @property
     def key(self):
@@ -228,7 +241,7 @@ class Chat:
         out: list[Message] = []
         for row in (attr(table, "AXRows") or [])[-last_rows:]:
             rf = frame(row)
-            texts, images, buttons = [], [], 0
+            texts, images, buttons, wide_buttons = [], [], 0, []
 
             def visit(e):
                 nonlocal buttons
@@ -244,6 +257,9 @@ class Chat:
                         images.append(f)
                 if role == "AXButton" and not (attr(e, "AXDescription") or attr(e, "AXTitle")):
                     buttons += 1
+                    f = frame(e)
+                    if f and 25 <= f[3] <= 45 and f[2] >= 100:   # 전체보기 under a folded bubble
+                        wide_buttons.append(e)
             _walk(row, visit)
             items = [("text", t, f) for t, f in texts]
             if not texts and images:   # sticker / photo row: only a big image, no text
@@ -253,8 +269,54 @@ class Chat:
                 right = wf[0] + wf[2] - (f[0] + f[2])
                 d = None if abs(left - right) <= _CENTER_TOLERANCE else "out" if right < left else "in"
                 if d:
-                    out.append(Message(d, kind, text, (round(rf[3]) if rf else 0, buttons)))
+                    more = wide_buttons[0] if kind == "text" and text.endswith(FOLD_MARK) and wide_buttons else None
+                    out.append(Message(d, kind, text, (round(rf[3]) if rf else 0, buttons), more))
         return out
+
+    # -- folded bubbles --------------------------------------------------------
+    def _viewers(self) -> dict[int, tuple]:
+        """Open 전체보기 viewer windows: {element id: (window, text area)}."""
+        out = {}
+        if _remote_token is None:
+            return out
+        for eid in range(_SCAN_IDS):
+            w = self._by_token(eid)
+            if w is None or attr(w, "AXRole") != "AXWindow" or nfc(attr(w, "AXTitle")) != VIEWER_TITLE:
+                continue
+            ta = _first(w, lambda e: attr(e, "AXRole") == "AXTextArea")
+            if ta is not None:
+                out[eid] = (w, ta)
+        return out
+
+    def full_text(self, msg: Message, timeout: float = 3.0) -> str:
+        """The whole text of a folded bubble: press its 전체보기, read the viewer window
+        that opens, and close that window again. A viewer the user already had open is
+        read but left open. Returns the folded text when no viewer shows up."""
+        if msg.more is None:
+            return msg.text
+        head = " ".join(msg.text.rstrip(FOLD_MARK).split())[:40]
+        def matching(viewers):
+            for eid, (w, ta) in viewers.items():
+                if " ".join(nfc(attr(ta, "AXValue")).split()).startswith(head):
+                    return eid, w, ta
+            return None
+        before = self._viewers()
+        hit = matching(before)
+        if hit is not None:
+            return nfc(attr(hit[2], "AXValue"))
+        AS.AXUIElementPerformAction(msg.more, "AXPress")
+        end = time.time() + timeout
+        while time.time() < end:
+            time.sleep(0.15)
+            hit = matching({k: v for k, v in self._viewers().items() if k not in before})
+            if hit is not None:
+                eid, w, ta = hit
+                text = nfc(attr(ta, "AXValue"))
+                close = attr(w, "AXCloseButton")
+                if close is not None:
+                    AS.AXUIElementPerformAction(close, "AXPress")
+                return text
+        return msg.text
 
     # -- sending -------------------------------------------------------------
     def send(self, text: str, allow_repeat: bool = False) -> dict:

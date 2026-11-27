@@ -1,3 +1,12 @@
+## 2026-11-27 — 접힌 긴 메시지 전문 읽기
+
+- 변경 파일: `kkt/ax.py`(`Message.more`, `Chat.full_text`), `kkt/mcp_server.py`(`read_messages(full=True)`), `kkt/cli.py`(`kkt read --folded`), `README.md`
+- 요약: 약 500자를 넘는 말풍선은 AX 값이 501자에서 "…"로 끊겨 `read_messages`가 전문을 못 읽었다. 말풍선 밑 "전체보기" 버튼을 눌러 뜨는 전문 창에서 읽고 닫는다.
+
+"전체보기" 버튼은 AX 동작 목록이 비어 있지만 `AXPress`는 받는다. 누르면 제목이 `Window`인 340×560 창이 뜨고, 그 안 `AXTextArea`에 전문이 들어 있다(979자 시험 글이 979자 그대로). 앞 앱은 바뀌지 않는다. 방 목록에 섞여 나오던 "Window"의 정체가 이 창이었다.
+
+카톡은 이 창도 AX 창 목록에 올리지 않아 원격 토큰으로 찾는다. 0~3000번을 훑는 데 1초도 안 걸려서(700개 0.07초) 범위를 좁히지 않았다. 누르기 전에 떠 있던 전문 창과 비교해 새로 뜬 창만 닫는다. 같은 글의 전문 창이 이미 열려 있으면 누르지 않고 그 창을 읽기만 한다. 펼치기 한 번에 2~4초가 걸린다. 감시·봇·전송 판정은 화면에 창이 뜨면 안 되고 앞부분 일치로 충분해서 펼치지 않는다.
+
 ## 2026-11-26 — 전송 판정·방 열기 다시 만들기 (실사용 피드백 반영)
 
 - 변경 파일: `kkt/deliver.py`(새 파일, CLI·봇·MCP 공용 전송), `kkt/ax.py`(`find()`, 방향 판정, `Chat.send`), `kkt/open_chat.py`, `kkt/mcp_server.py`, `kkt/watch.py`·`kkt/cli.py`(`--skip-backlog`, `--allow-repeat`), `README.md`

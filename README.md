@@ -25,7 +25,7 @@ permission (a terminal that already has them is enough).
 | Command | What it does |
 | --- | --- |
 | `bin/kkt rooms` | List open KakaoTalk windows |
-| `bin/kkt read ROOM [-n 20]` | Print recent messages (`<` incoming, `>` outgoing) |
+| `bin/kkt read ROOM [-n 20] [--folded]` | Print recent messages (`<` incoming, `>` outgoing), long ones in full |
 | `bin/kkt send ROOM TEXT [--allow-repeat]` | Send a message and print the verdict (`sent bubble …`) |
 | `bin/kkt snap ROOM [--full]` | Capture the chat window in the background (reactions and stickers live only here) |
 | `bin/kkt watch ROOM [--skip-backlog]` | One tab-separated line per burst of new activity, with a capture path; `--skip-backlog` starts from what is on screen instead of releasing unanswered messages first |
@@ -100,7 +100,7 @@ enough). A cross-process lock keeps it and the daemon from typing at once.
 | --- | --- |
 | `kakao_status` | Running, permissions, screen lock, open rooms |
 | `list_rooms` | Chat rooms open in their own window (any desktop; windows without a composer are left out) |
-| `read_messages(room, limit)` | Recent messages, `in` / `out`, `text` / `media` |
+| `read_messages(room, limit, full)` | Recent messages, `in` / `out`, `text` / `media`; folded long messages are read in full |
 | `capture_room(room, full)` | Background capture of the chat window |
 | `open_room(room)` | Opens a chat ahead of time (the other tools open rooms by themselves) |
 | `send_message(room, text, …)` | Opens the room if needed, sends, verifies, returns `sent` / `not_sent` / `uncertain` / `refused` plus a capture |
@@ -155,6 +155,13 @@ visible change.
 - **Direction.** A bubble is outgoing when it sits closer to the right edge than the
   left, incoming otherwise; rows with nearly equal margins are separators. Fixed
   margins broke once a scroll bar widened the right margin.
+- **Long messages.** KakaoTalk folds bubbles of about 500+ characters: their AX
+  value is cut and ends with `…`. The untitled 전체보기 button under the bubble
+  accepts `AXPress` (it lists no actions) and opens a viewer window titled
+  `Window` with the whole text. Reading presses it, finds the new viewer by
+  remote-token scan (3000 ids in well under a second), reads it and closes it;
+  a viewer the user already had open is read and left alone. Watching, the bot
+  and send verification keep the folded text.
 - **Reactions and stickers.** Reaction emoji are not exposed through AX; a reaction
   shows up as a change in the row's height and buttons, and `snap` shows which one.
 - **Bursts.** New incoming messages are batched until the chat has been quiet for a
