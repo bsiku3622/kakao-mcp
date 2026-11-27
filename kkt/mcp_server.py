@@ -21,21 +21,18 @@ Optional switches:
 """
 from __future__ import annotations
 
-import argparse
 import contextlib
 import fcntl
 import functools
-import hmac
 import json
 import os
-import secrets
-import sys
 import threading
 import time
 
 import ApplicationServices as AS
 
 from .ax import Chat, KakaoError, kakao_pid, list_windows, nfc, screen_locked
+from . import transport
 from .capture import snap
 from .deliver import composer, deliver
 from .open_chat import MAIN_TITLE, hid_idle_seconds, open_chat
@@ -49,7 +46,6 @@ DATA = os.path.join(ROOT, "data")
 CACHE = os.path.join(DATA, "winid_cache.json")
 LOG = os.path.join(DATA, "mcp-log.jsonl")
 STOP = os.path.join(DATA, "STOP")
-TOKEN_FILE = os.path.join(DATA, "http-token")
 LOCK_FILE = os.path.join(DATA, ".kakao.lock")
 HTTP_PORT = int(os.environ.get("KKT_HTTP_PORT", "8799"))
 ALLOWED = {nfc(r.strip()) for r in os.environ.get("KKT_ALLOWED_ROOMS", "").split(",") if r.strip()}
@@ -145,8 +141,12 @@ def kakao_status() -> dict:
     """KakaoTalk state: running, permissions, screen lock, open rooms."""
     pid = kakao_pid()
     main = next((w for w in list_windows(pid) if w["title"] == MAIN_TITLE), None) if pid else None
+    titles = [w["title"] for w in list_windows(pid)] if pid else []
     return {
+        "platform": "macos",
         "running": pid is not None,
+        # Signed out, KakaoTalk keeps only a window titled 로그인 and no 카카오톡 main window.
+        "logged_in": MAIN_TITLE in titles and "로그인" not in titles,
         "accessibility_trusted": bool(AS.AXIsProcessTrusted()),
         # Without it window titles read empty, so no room is listed. Re-read at process start.
         "screen_recording": bool(__import__("Quartz").CGPreflightScreenCaptureAccess()),
@@ -259,102 +259,15 @@ def send_message(room: str, text: str, open_if_needed: bool = True, allow_repeat
     return out
 
 
-def _token(create: bool) -> str:
-    try:
-        with open(TOKEN_FILE) as f:
-            tok = f.read().strip()
-        if tok:
-            return tok
-    except OSError:
-        pass
-    if not create:
-        sys.exit(f"kakao-mcp: no daemon token at {TOKEN_FILE}; start the daemon (Kakao MCP launcher) first")
-    os.makedirs(DATA, exist_ok=True)
-    tok = secrets.token_urlsafe(32)
-    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(tok)
-    return tok
-
-
-class _BearerGate:
-    """ASGI guard: every HTTP request must carry the daemon's bearer token."""
-
-    def __init__(self, app, token: str):
-        self.app, self.expected = app, f"Bearer {token}".encode()
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            got = dict(scope.get("headers") or []).get(b"authorization", b"")
-            if not hmac.compare_digest(got, self.expected):
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"unauthorized"})
-                return
-        await self.app(scope, receive, send)
-
-
-def run_daemon() -> None:
-    import uvicorn
+def _ask_permissions() -> None:
+    """Ask once, so the launcher app shows up in System Settings > Privacy & Security."""
     import Quartz
-    # Ask once, so the launcher app shows up in System Settings > Privacy & Security.
     AS.AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
     Quartz.CGRequestScreenCaptureAccess()
-    # Stateless: no session ids, so a restarted daemon keeps serving bridges that were connected.
-    app = _BearerGate(mcp.streamable_http_app(host="127.0.0.1", stateless_http=True, json_response=True),
-                      _token(create=True))
-    uvicorn.run(app, host="127.0.0.1", port=HTTP_PORT, log_level="warning")
-
-
-def run_bridge() -> None:
-    """Relay stdio <-> the local daemon, message for message."""
-    import logging
-
-    import anyio
-    for name in ("httpx", "httpx2", "httpcore", "mcp.client"):   # INFO lines per request otherwise
-        logging.getLogger(name).setLevel(logging.WARNING)
-    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
-    from mcp.server.stdio import stdio_server
-
-    async def relay():
-        import httpx2
-        headers = {"Authorization": f"Bearer {_token(create=False)}"}
-        # Opening a room can wait up to 30 s for the user to rest, then send and verify.
-        timeout = httpx2.Timeout(300.0, connect=10.0)
-        async with create_mcp_http_client(headers=headers, timeout=timeout) as http, \
-                streamable_http_client(f"http://127.0.0.1:{HTTP_PORT}/mcp", http_client=http) as (r_up, w_up), \
-                stdio_server() as (r_in, w_in):
-            async with anyio.create_task_group() as tg:
-                async def pump(src, dst, label):
-                    async for msg in src:
-                        if isinstance(msg, Exception):
-                            print(f"kakao-mcp bridge ({label}): {msg}", file=sys.stderr)
-                            continue
-                        await dst.send(msg)
-                    tg.cancel_scope.cancel()
-                async def orphan_watch(parent=os.getppid()):
-                    while os.getppid() == parent:     # reparented to launchd = client died
-                        await anyio.sleep(2)
-                    tg.cancel_scope.cancel()
-                tg.start_soon(pump, r_in, w_up, "client->daemon")
-                tg.start_soon(pump, r_up, w_in, "daemon->client")
-                tg.start_soon(orphan_watch)
-
-    anyio.run(relay)
 
 
 def main():
-    p = argparse.ArgumentParser(prog="kakao-mcp")
-    g = p.add_mutually_exclusive_group()
-    g.add_argument("--http", action="store_true", help="run the local daemon on 127.0.0.1")
-    g.add_argument("--bridge", action="store_true", help="relay stdio to the local daemon")
-    a = p.parse_args()
-    if a.http:
-        run_daemon()
-    elif a.bridge:
-        run_bridge()
-    else:
-        mcp.run("stdio")
+    transport.main(mcp, DATA, HTTP_PORT, prepare_daemon=_ask_permissions)
 
 
 if __name__ == "__main__":

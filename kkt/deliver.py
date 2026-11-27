@@ -17,39 +17,17 @@ Measured pitfalls this handles:
 """
 from __future__ import annotations
 
-import re
 import time
 
 import ApplicationServices as AS
 
-from .ax import Chat, KakaoError, attr, find, list_windows, nfc
+from .ax import Chat, KakaoError, attr, find, list_windows
+from .textmatch import normalize, same_text
 
 COMPOSER = "메시지 입력"
 TAIL_ROWS = 15
 VERIFY_ON_SCREEN, VERIFY_OFF_SCREEN = 8.0, 15.0
 AFTER_CLEARED = 4.0
-
-_WS = re.compile(r"\s+")
-
-
-def normalize(s: str) -> str:
-    """Text as it renders: NFC, any line break or run of spaces as one space."""
-    return _WS.sub(" ", nfc(s).replace(" ", "\n").replace(" ", "\n")).strip()
-
-
-def same_text(bubble: str, sent_n: str) -> bool:
-    """A bubble shows the sent text: equal after normalising, the same opening 40
-    characters (folded long bubbles), or a long-enough leading part of it."""
-    b = normalize(bubble).rstrip("…").rstrip()
-    if not b:
-        return False
-    if b == sent_n:
-        return True
-    head = min(40, len(sent_n))
-    if len(b) >= head and b[:head] == sent_n[:head]:
-        return True
-    return len(b) >= 20 and sent_n.startswith(b)
-
 
 def composer(win):
     return find(win, lambda e: attr(e, "AXRole") == "AXTextArea" and attr(e, "AXDescription") == COMPOSER)
