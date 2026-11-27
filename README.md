@@ -156,6 +156,51 @@ same way, checked until it sticks - about a second, and only after the keyboard 
 mouse have rested for 1.5 s. A room stays open afterwards, so later sends cause no
 visible change.
 
+## Windows
+
+KakaoTalk keeps one PC signed in, so the same tools also run against KakaoTalk for
+Windows when that is the signed-in PC. The Windows server (`kkt/win/`) uses window
+messages only: nothing comes to the front, the real keyboard and mouse are not
+used, and it works with the main window hidden in the tray and in a disconnected
+RDP session. Its tool names and verdicts match the macOS server; its MCP server
+name is `kakaotalk-win`. `kakao_status` reports `platform` and `logged_in` on both,
+so a client registered with both servers can pick the signed-in one.
+
+```powershell
+py -3.13 -m venv .venv; .venv\Scripts\pip install -r requirements-win.txt
+Set-Content -Encoding utf8 data\me.txt "<your KakaoTalk name>"   # how your own messages are recognised
+powershell -ExecutionPolicy Bypass -File scripts\install-daemon-win.ps1
+```
+
+The installer registers a logon task that starts `kakao-mcp-win --http` inside
+your Windows session (window messages do not cross sessions, so it cannot run as a
+service or from an SSH command). Clients then use HTTP to `127.0.0.1:8799` with the
+token in `data\http-token`, or `bin\kakao-mcp-win.cmd --bridge` over stdio. Another
+machine can run that bridge over SSH, like the macOS one.
+
+Measured on KakaoTalk for Windows 26.10.0:
+
+- **Open.** `Ctrl+F` shows a list's search box, `WM_SETTEXT` fills it, `Enter`
+  opens the top result. The friends tab goes first (it matches friend names only,
+  so a 1:1 room comes up alone), then the chat tab. The result lists are
+  custom-drawn with no readable text, so the opened window's title is the check:
+  a window with another title is closed again (that room is marked read).
+- **Keys without the keyboard.** `Ctrl+…` is posted to one window while the
+  modifiers are marked down in that thread's key state only (attach, set, post,
+  restore). A plain posted `Enter` does nothing in the composer, a sent one only
+  inserts a line break, and `Enter` with `VK_RETURN` marked down sends - but only
+  after a synchronous `Enter` on the empty composer has primed it, so every send
+  primes first.
+- **Read.** `Ctrl+A`, `Ctrl+C` to the message list, then the clipboard (put back
+  afterwards). Lines read `[sender] [오전|오후 H:MM] text`; messages of about 500+
+  characters come back cut and marked `folded`.
+- **Composer.** The placeholder `메시지 입력` is real text in the control.
+
+Limits: folded long messages cannot be expanded yet; `PrintWindow` captures are
+blank while the session is not drawing (RDP minimized or disconnected), so
+verdicts never depend on them; while you sit at the Windows session, opening a
+room may bring its window to the front.
+
 ## How it works
 
 - **Finding the window.** KakaoTalk leaves `AXWindows` empty, so the chat window is

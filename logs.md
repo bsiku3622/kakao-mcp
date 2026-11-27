@@ -1,3 +1,18 @@
+## 2026-11-27 — 윈도우판 (창 메시지만으로 보내기·읽기·방 열기)
+
+- 변경 파일: `kkt/win/`(winapi·kakao·server, 새 파일), `kkt/transport.py`·`kkt/textmatch.py`(맥 서버에서 공용 부분 분리), `kkt/mcp_server.py`(`platform`·`logged_in`), `bin/kakao-mcp-win.cmd`, `scripts/install-daemon-win.ps1`, `requirements-win.txt`, `README.md`
+- 요약: PC 카톡은 한 대만 로그인되므로, 윈도우가 로그인된 PC일 때 같은 도구를 쓰는 서버. 앞 창·실제 키·마우스 없이 창 메시지로만 동작한다. 도구 이름과 판정은 맥과 같고 서버 이름만 `kakaotalk-win`.
+
+⚠️ **Enter는 세 겹으로 막혀 있었다.** 입력칸에 `PostMessage`로 보낸 Enter는 무시되고, `SendMessage`로 보낸 Enter는 줄바꿈만 넣는다(kronenz 주석과 같음). 그 스레드 키 상태에 `VK_RETURN`을 눌림으로 표시하고 보내야 전송되는데, 이것도 처음에는 된 방이 있고 안 된 방이 있었다. 성공한 쪽 직전에 `SendMessage` Enter를 보냈던 것을 재현해서, **빈 입력칸에 동기 Enter로 한 번 준비해야 다음 키 상태 Enter가 전송된다**는 걸 찾았다(준비 없음 실패, 준비 후 2/2 성공). 그래서 매 전송마다 준비한다.
+
+`Ctrl+F`·`Ctrl+A`·`Ctrl+C`도 같은 방식이다: 대상 스레드에 `AttachThreadInput`, `SetKeyboardState`로 수정키만 눌림 표시, `PostMessage`, 원래 상태로 복구. 실제 키보드와 앞 창은 건드리지 않는다. 검색칸은 `Esc`로 닫히지 않아 `WM_SETTEXT ""`로 비운다. 친구 탭 검색칸은 `Ctrl+F` 뒤에도 크기 0인데 글을 넣고 Enter를 보내면 그대로 동작했다. 메인 창이 트레이로 숨어 있어도 방이 열린다.
+
+검색 결과 목록은 직접 그린 컨트롤이고 MSAA에도 행이 없어(자식 1개, 이름은 창 이름뿐) 결과를 글자로 확인할 수 없다. 그래서 열린 창의 제목이 정확히 같은지만 확인하고, 다르면 닫는다. 1:1 방은 친구 탭 검색이 먼저라 결과가 하나로 좁혀지고, 단톡 이름이면 친구 검색이 아무것도 열지 않아 부작용이 없다. 나와의 채팅은 친구 검색에 안 나오고, 채팅 탭에서 고정된 맨 위라 채팅 검색으로 열렸다.
+
+⚠️ **창 메시지는 Windows 세션을 넘지 못한다.** SSH 명령은 세션 0이라, 시험과 상시 서버 모두 대화형 예약 작업(`LogonType Interactive`)으로 사용자 세션 안에서 돌린다. `schtasks /TR`은 경로 공백과 PowerShell 5.1 따옴표 처리 때문에 깨져서 `Register-ScheduledTask` cmdlet을 쓴다. 상시 서버를 `pythonw`로 띄우면 표준 출력이 `None`이라 uvicorn 첫 로그에서 죽는다(작업 결과 1) — 이때는 `data/daemon.log`로 돌린다.
+
+시험 프로세스를 DPI 인식으로 두지 않으면 창 크기가 배율 적용 전 값으로 오고 `PrintWindow`는 왼쪽 위만 찍힌다. 캡처는 RDP 창을 최소화하거나 끊으면 검게 나와서, 윈도우판 판정은 캡처에 기대지 않고 입력칸 비워짐과 복사한 대화로 한다. 약 500자 넘는 글은 복사에서도 "..."로 잘린다(전체보기 위치를 화면 없이 찾을 방법이 아직 없음). 입력칸의 "메시지 입력"은 실제 텍스트라 빈 칸으로 취급한다.
+
 ## 2026-11-27 — Swift 중계, 맥 클라이언트 HTTP 직결
 
 - 변경 파일: `bridge/main.swift`·`bridge/build.sh`(새 파일), `bin/kkt-mcp`(`--bridge`면 Swift 중계 우선), `scripts/install-daemon.sh`, `README.md`
